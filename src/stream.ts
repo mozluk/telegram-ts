@@ -1,9 +1,8 @@
 /**
  * TypedEventStream — async-iterable wrapper around a gRPC server-stream.
  *
- * Mirrors the shape exposed by `@photon-ai/whatsapp-business` so consumers
- * (notably `spectrum-ts`) can swap an underlying source while keeping a
- * stable user-facing stream alive.
+ * Lets a consumer swap an underlying source while keeping a stable
+ * user-facing stream alive.
  *
  * Only one consumer is allowed per stream. Call `.close()` (or
  * `Symbol.asyncDispose`) to stop consumption.
