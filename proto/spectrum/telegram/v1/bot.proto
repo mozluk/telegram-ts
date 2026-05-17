@@ -1,0 +1,349 @@
+syntax = "proto3";
+
+package spectrum.telegram.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// Every RPC requires one piece of metadata:
+//   bot_token - the Telegram credential (e.g. "12345:AAH...").
+//               bot_id is parsed from its prefix; the transport never persists it.
+service Bot {
+  rpc Send(SendRequest) returns (SendResponse);
+  // Album / media group: 2..10 items rendered as a single visual unit.
+  rpc SendGroup(SendGroupRequest) returns (SendGroupResponse);
+  rpc Edit(EditRequest) returns (EditResponse);
+  // Replace the media of a previously-sent message (editMessageMedia).
+  rpc EditMedia(EditMediaRequest) returns (EditResponse);
+  // Update only the caption of a previously-sent media message.
+  rpc EditCaption(EditCaptionRequest) returns (EditResponse);
+  rpc Delete(DeleteRequest) returns (google.protobuf.Empty);
+  rpc React(ReactRequest) returns (google.protobuf.Empty);
+  // Send a chat action ("typing", "upload_photo", ...). Best-effort hint.
+  rpc SendChatAction(SendChatActionRequest) returns (google.protobuf.Empty);
+  // Mark a message as read on behalf of a Telegram Business account.
+  // Regular bots cannot mark messages read (Telegram does it implicitly when
+  // the webhook returns 200). This RPC requires a business_connection_id
+  // delivered via the `business_connection` update on Subscribe.
+  rpc MarkBusinessRead(MarkBusinessReadRequest) returns (google.protobuf.Empty);
+  rpc GetFileUrl(GetFileUrlRequest) returns (GetFileUrlResponse);
+
+  rpc Subscribe(SubscribeRequest) returns (stream Event);
+  rpc Replay(ReplayRequest) returns (stream Event);
+}
+
+message Event {
+  // Telegram update_id; monotonic per bot, the cursor consumers track.
+  uint64 cursor = 1;
+  google.protobuf.Timestamp received_at = 2;
+
+  oneof payload {
+    InboundMessage message = 10;
+    Reaction reaction = 11;
+    PollUpdate poll = 12;
+    PollAnswer poll_answer = 13;
+    Heartbeat heartbeat = 99;
+  }
+}
+
+// Stringified ids throughout to avoid JS Number precision loss on uint64.
+message User {
+  string id = 1;
+  string first_name = 2;
+  optional string last_name = 3;
+  optional string username = 4;
+  bool is_bot = 5;
+  optional string language_code = 6;
+}
+
+// `type` is one of: "private" | "group" | "supergroup" | "channel".
+message Chat {
+  string id = 1;
+  string type = 2;
+  optional string title = 3;
+  optional string username = 4;
+}
+
+message InboundMessage {
+  string message_id = 1;
+  Chat chat = 2;
+  optional User from = 3;
+  google.protobuf.Timestamp date = 4;
+  string text = 5;
+  optional string caption = 6;
+  optional string media_group_id = 7;
+  optional string reply_to_message_id = 8;
+
+  // Typed content. At most one of these will be populated; `text`/`caption`
+  // provide complementary context where Telegram allows both (e.g. a photo
+  // with a caption).
+  optional InboundMedia photo = 10;     // largest size from message.photo[]
+  optional InboundMedia video = 11;
+  optional InboundMedia audio = 12;
+  optional InboundMedia voice = 13;
+  optional InboundMedia document = 14;
+  optional InboundMedia sticker = 15;
+  optional InboundLocation location = 16;
+  optional InboundContact contact = 17;
+
+  // Raw Telegram Update JSON for anything not modeled above.
+  bytes raw = 100;
+}
+
+message InboundMedia {
+  string file_id = 1;
+  string file_unique_id = 2;
+  optional int64 file_size = 3;
+  optional string mime_type = 4;
+  optional string filename = 5;     // documents only
+  optional int32 duration_sec = 6;  // audio / voice / video
+  optional int32 width = 7;          // photo / video / sticker
+  optional int32 height = 8;         // photo / video / sticker
+}
+
+message InboundLocation {
+  double latitude = 1;
+  double longitude = 2;
+  // When the message is a venue (`message.venue`) these carry the name + address.
+  optional string title = 3;
+  optional string address = 4;
+}
+
+message InboundContact {
+  string phone_number = 1;
+  string first_name = 2;
+  optional string last_name = 3;
+  optional string vcard = 4;
+  // Telegram-side user id when the contact is a registered Telegram user.
+  optional string user_id = 5;
+}
+
+message Reaction {
+  string message_id = 1;
+  Chat chat = 2;
+  optional User from = 3;
+  // Current set of emojis on the message (not a delta).
+  repeated string emoji = 4;
+  bytes raw = 100;
+}
+
+message PollUpdate {
+  string poll_id = 1;
+  bytes raw = 100;
+}
+
+// A single user's vote on a non-anonymous poll. `option_ids` is empty when the
+// user retracted their vote.
+message PollAnswer {
+  string poll_id = 1;
+  optional User from = 2;
+  // 0-based indices into the original poll's options.
+  repeated int32 option_ids = 3;
+  bytes raw = 100;
+}
+
+// Emitted on Subscribe every ~30s so callers can detect dead connections.
+message Heartbeat {
+  google.protobuf.Timestamp at = 1;
+}
+
+message SubscribeRequest {
+  // If set, drain event_log > this cursor before attaching to the live bus.
+  optional uint64 from_cursor = 1;
+}
+
+message ReplayRequest {
+  uint64 from_cursor = 1;
+  optional uint64 until_cursor = 2;
+  // Default 1000, max 10000.
+  optional uint32 limit = 3;
+}
+
+message SendRequest {
+  string chat_id = 1;
+  oneof content {
+    string text = 2;
+    Media photo = 3;
+    Media video = 4;
+    Media audio = 5;
+    Media voice = 6;
+    Media document = 7;
+    Media sticker = 8;
+    Location location = 9;
+    Contact contact = 10;
+    Poll poll = 11;
+  }
+  optional string reply_to_message_id = 20;
+  // Applies to text sends only; ignored for other content types. Telegram
+  // auto-renders link previews from URLs in text — use this to disable, swap
+  // the previewed URL, or change layout.
+  optional LinkPreviewOptions link_preview_options = 21;
+  // Anything not modeled above is forwarded straight to the Bot API method body.
+  // Strings only — for binary uploads use Media.data.
+  map<string, string> raw_params = 50;
+}
+
+// Outbound media. Use exactly one of: file_id (already on Telegram's servers),
+// url (Telegram fetches it), or data (this server uploads it via multipart).
+message Media {
+  oneof source {
+    string file_id = 1;
+    string url = 2;
+    bytes data = 3;
+  }
+  optional string caption = 10;
+  // Documents only. Required when uploading bytes without a meaningful name.
+  optional string filename = 11;
+  // MIME type hint for uploads. Telegram usually sniffs correctly without this.
+  optional string mime_type = 12;
+}
+
+// Outbound location. When `title` is set, sendVenue is used (also requires
+// `address`). Otherwise sendLocation is used.
+message Location {
+  double latitude = 1;
+  double longitude = 2;
+  optional string title = 3;
+  optional string address = 4;
+}
+
+// Outbound contact card. Telegram's sendContact takes a single contact.
+message Contact {
+  string phone_number = 1;
+  string first_name = 2;
+  optional string last_name = 3;
+  optional string vcard = 4;
+}
+
+// Outbound poll.
+message Poll {
+  string question = 1;
+  // 2..10 strings, each 1..100 chars (Telegram limits).
+  repeated string options = 2;
+  // "regular" (default) or "quiz".
+  optional string type = 3;
+  // Regular polls only.
+  optional bool allows_multiple_answers = 4;
+  // Default true.
+  optional bool is_anonymous = 5;
+  // Quiz polls only; 0-based index of the correct option.
+  optional int32 correct_option_id = 6;
+  // Quiz polls; explanation shown after the user answers (0-200 chars).
+  optional string explanation = 7;
+  // 5..600 sec; mutually exclusive with close_date.
+  optional int32 open_period = 8;
+}
+
+// Telegram message link preview controls. See Bot API LinkPreviewOptions.
+message LinkPreviewOptions {
+  optional bool is_disabled = 1;
+  // Render the preview for this URL instead of the first one in the text.
+  optional string url = 2;
+  optional bool prefer_small_media = 3;
+  optional bool prefer_large_media = 4;
+  // Show the preview above the message text instead of below.
+  optional bool show_above_text = 5;
+}
+
+message SendResponse {
+  string message_id = 1;
+  string chat_id = 2;
+}
+
+// Album / media group send. Telegram constraints:
+//   - 2..10 items
+//   - Either all photos+videos (mixed allowed), or all audios, or all documents.
+message SendGroupRequest {
+  string chat_id = 1;
+  repeated GroupItem items = 2;
+  optional string reply_to_message_id = 3;
+  map<string, string> raw_params = 50;
+}
+
+message GroupItem {
+  // "photo" | "video" | "audio" | "document"
+  string kind = 1;
+  Media media = 2;
+}
+
+message SendGroupResponse {
+  // One entry per delivered item, in the same order as the request.
+  repeated SendResponse messages = 1;
+}
+
+message EditRequest {
+  string chat_id = 1;
+  string message_id = 2;
+  oneof content {
+    string text = 3;
+  }
+  optional LinkPreviewOptions link_preview_options = 4;
+  map<string, string> raw_params = 50;
+}
+
+message EditResponse {
+  string message_id = 1;
+  string chat_id = 2;
+}
+
+// editMessageMedia. Replaces the media of a previously-sent message; the new
+// media must match the original family (photo<->video, audio<->audio,
+// document<->document). Telegram rejects cross-family swaps.
+message EditMediaRequest {
+  string chat_id = 1;
+  string message_id = 2;
+  oneof content {
+    Media photo = 3;
+    Media video = 4;
+    Media audio = 5;
+    Media document = 6;
+  }
+  map<string, string> raw_params = 50;
+}
+
+// editMessageCaption. Set `caption` to the empty string to clear it.
+message EditCaptionRequest {
+  string chat_id = 1;
+  string message_id = 2;
+  string caption = 3;
+  map<string, string> raw_params = 50;
+}
+
+message DeleteRequest {
+  string chat_id = 1;
+  string message_id = 2;
+}
+
+message ReactRequest {
+  string chat_id = 1;
+  string message_id = 2;
+  repeated string emoji = 3;
+  bool is_big = 4;
+}
+
+message SendChatActionRequest {
+  string chat_id = 1;
+  // One of: typing | upload_photo | record_video | upload_video |
+  //   record_voice | upload_voice | upload_document | choose_sticker |
+  //   find_location | record_video_note | upload_video_note
+  string action = 2;
+  // For Telegram Business connections.
+  optional string business_connection_id = 3;
+  // Forum topic thread, when applicable.
+  optional int32 message_thread_id = 4;
+}
+
+message MarkBusinessReadRequest {
+  string business_connection_id = 1;
+  string chat_id = 2;
+  string message_id = 3;
+}
+
+message GetFileUrlRequest {
+  string file_id = 1;
+}
+
+message GetFileUrlResponse {
+  // https URL valid for ~1h.
+  string url = 1;
+}
